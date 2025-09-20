@@ -1,72 +1,37 @@
-import os
-import io
-import json
 from flask import Flask, request, send_file, jsonify
-from PIL import Image, UnidentifiedImageError
+import io
+import img2pdf
 
 app = Flask(__name__)
 
-@app.get("/health")
-def health():
-    return jsonify({"ok": True})
-
-@app.post("/crop")
-def crop_image():
+@app.route("/img2pdf", methods=["POST"])
+def images_to_pdf():
     """
-    Espera:
-      - file: imagen original (binario, multipart/form-data)
-      - coords: JSON como string, por ejemplo:
-        {
-          "id":"img-0.jpeg",
-          "top_left_x":289,
-          "top_left_y":667,
-          "bottom_right_x":1132,
-          "bottom_right_y":891
-        }
-    Devuelve:
-      - La imagen recortada en binario (JPEG).
+    Espera imágenes enviadas como multipart/form-data:
+      files[] = 0.png, 1.png, 2.png ...
+    Devuelve un único PDF con las imágenes en orden.
     """
-    if "file" not in request.files:
-        return jsonify({"error": "Falta la imagen en 'file'"}), 400
-    coords_raw = request.form.get("coords")
-    if not coords_raw:
-        return jsonify({"error": "Faltan las coordenadas en 'coords'"}), 400
-
     try:
-        coords = json.loads(coords_raw)
+        if "files" not in request.files:
+            return jsonify({"error": "No se encontraron archivos en la petición"}), 400
+
+        files = request.files.getlist("files")
+        if not files:
+            return jsonify({"error": "La lista de archivos está vacía"}), 400
+
+        # Ordenar por número en el nombre (0.png, 1.png, ...)
+        files.sort(key=lambda f: int(f.filename.split(".")[0]))
+
+        # Crear PDF en memoria
+        pdf_bytes = img2pdf.convert([f.read() for f in files])
+        pdf_buffer = io.BytesIO(pdf_bytes)
+
+        return send_file(
+            pdf_buffer,
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name="documento.pdf"
+        )
+
     except Exception as e:
-        return jsonify({"error": f"coords inválido: {e}"}), 400
-
-    # Abrir imagen
-    try:
-        img_file = request.files["file"]
-        img = Image.open(img_file.stream).convert("RGB")
-    except UnidentifiedImageError:
-        return jsonify({"error": "Formato de imagen no reconocido"}), 400
-
-    # Recortar
-    try:
-        x1 = int(coords["top_left_x"])
-        y1 = int(coords["top_left_y"])
-        x2 = int(coords["bottom_right_x"])
-        y2 = int(coords["bottom_right_y"])
-    except Exception:
-        return jsonify({"error": "Coordenadas incompletas o no numéricas"}), 400
-
-    crop = img.crop((x1, y1, x2, y2))
-
-    # Devolver
-    buf = io.BytesIO()
-    crop.save(buf, format="JPEG", quality=92)
-    buf.seek(0)
-
-    return send_file(
-        buf,
-        mimetype="image/jpeg",
-        as_attachment=True,
-        download_name=coords.get("id", "crop.jpeg")
-    )
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+        return jsonify({"error": str(e)}), 500
